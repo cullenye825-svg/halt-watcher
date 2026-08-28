@@ -1,0 +1,39 @@
+# Always-on option: drop this at /etc/systemd/system/halt-watcher.service on any
+# small Linux box (an Oracle Cloud "Always Free" ARM VM costs nothing forever).
+#
+#   sudo useradd -r -m -s /usr/sbin/nologin halts
+#   sudo mkdir -p /opt/halt-watcher && sudo cp halt_watcher.py /opt/halt-watcher/
+#   sudo chown -R halts:halts /opt/halt-watcher
+#   sudo install -m 600 -o halts -g halts halt-watcher.env /etc/halt-watcher.env
+#   sudo systemctl enable --now halt-watcher
+#   journalctl -u halt-watcher -f
+
+[Unit]
+Description=US equity trading halt watcher (LULD + market-wide) -> ntfy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=halts
+Group=halts
+WorkingDirectory=/opt/halt-watcher
+EnvironmentFile=/etc/halt-watcher.env
+ExecStart=/usr/bin/python3 /opt/halt-watcher/halt_watcher.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/halt-watcher
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
