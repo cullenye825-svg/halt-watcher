@@ -281,7 +281,12 @@ def poll_once(cfg: dict, state: dict, prime: bool = False) -> int:
 
         if key not in state["alerted"]:
             if prime:
+                # Seed BOTH sets. We never alerted on this halt, so a later
+                # "resuming" ping for it would be noise -- and on a cold start
+                # most of the feed is already-resumed halts from earlier today.
                 state["alerted"][key] = now
+                if key not in state["resumed"]:
+                    state["resumed"].append(key)
                 continue
             title, body, priority, tags = format_halt(h)
             click = f"https://www.tradingview.com/chart/?symbol={h['symbol']}"

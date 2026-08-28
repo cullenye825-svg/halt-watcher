@@ -63,6 +63,28 @@ run(sample, st, prime=True)
 check("no pushes while priming", len(PUSHES) == 0)
 check("both-eligible halt recorded", len(st["alerted"]) == 1)  # T1 filtered out
 
+print("\n2b. REGRESSION: priming must not fire resume pings on the next poll")
+st_p = {"alerted": {}, "resumed": []}
+already_resumed = feed([
+    item("PFSA", "LUDP", "12:29:33", rtrade="12:34:33"),
+    item("KXIN", "LUDP", "10:29:35", rtrade="10:34:35"),
+    item("WCT",  "LUDP", "11:09:01.376", rtrade="11:14:01"),
+])
+PUSHES.clear()
+run(already_resumed, st_p, prime=True)
+check("priming pass silent", len(PUSHES) == 0)
+run(already_resumed, st_p)           # the very next real poll
+check("no resume spam after priming", len(PUSHES) == 0)
+PUSHES.clear()
+brand_new = feed([
+    item("PFSA", "LUDP", "12:29:33", rtrade="12:34:33"),
+    item("KXIN", "LUDP", "10:29:35", rtrade="10:34:35"),
+    item("WCT",  "LUDP", "11:09:01.376", rtrade="11:14:01"),
+    item("NEWCO", "LUDP", "15:02:11.900"),
+])
+run(brand_new, st_p)
+check("a genuinely new halt still alerts", len(PUSHES) == 1 and "NEWCO" in PUSHES[0]["title"])
+
 print("\n3. new LULD halt alerts once, T1 filtered")
 PUSHES.clear()
 st = {"alerted": {}, "resumed": []}
