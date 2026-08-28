@@ -3,6 +3,13 @@
 Pushes US equity trading halts to your phone within ~8 seconds. Watches LULD
 volatility pauses and market-wide circuit breakers by default.
 
+**Status: live.** This repo runs itself on GitHub Actions — two scheduled legs
+cover 09:20–16:10 ET every weekday. The `NTFY_TOPIC` secret is set. Nothing to
+install. To check it end to end at any time, go to
+**Actions → Halt watcher (morning) → Run workflow**; a manual run bypasses the
+time guard, sends one test push to your phone, and watches for the number of
+minutes you enter (default 10).
+
 ## Which feed, and why not NYSE
 
 Use **Nasdaq Trader's Trade Halts RSS**:
@@ -71,7 +78,10 @@ is filtered out. Change that with `HALT_REASONS=all` or your own list.
    notification channel to Critical, so an urgent circuit-breaker alert still
    sounds when your phone is on silent.
 
-### 2. Smoke test from your Mac
+### 2. Smoke test
+
+Easiest: Actions tab → **Halt watcher (morning)** → **Run workflow**. The first
+step sends a test push. Or from any machine with the repo checked out:
 
 ```bash
 export NTFY_TOPIC=cullen-halts-xxxxxxxxxxxx
@@ -92,12 +102,16 @@ Public repos get **unlimited** free Actions minutes, and a job can run for up to
 6 hours. Two workflows cover the session in a morning and an afternoon leg,
 polling every 8 seconds inside a long-running job.
 
+This is what this repo already does. To rebuild it elsewhere:
+
 ```bash
 gh repo create halt-watcher --public --source=. --push
-gh secret set NTFY_TOPIC --body "cullen-halts-xxxxxxxxxxxx"
+gh secret set NTFY_TOPIC --body "your-topic-here"
 ```
 
-Then Actions tab → *Halt watcher (morning)* → **Run workflow** to test it now.
+Then set **Settings → Actions → General → Workflow permissions** to *Read and
+write* (the keepalive job needs it to push), and use Actions → **Run workflow**
+to test.
 
 Three things to know:
 
@@ -166,8 +180,9 @@ scheduler — it persists state to `--state-file` between runs.
 ## Behaviour worth knowing
 
 - **First run primes silently.** The feed holds ~30 recent halts; on a cold
-  start the watcher records them all without alerting, so you don't get 30
-  pushes. Every halt after that pings.
+  start the watcher records them all — as both "already alerted" and "already
+  resumed" — so you get neither a halt burst nor a burst of stale "resuming"
+  pings. Every halt discovered after that pings.
 - **Dedupe key is `symbol|haltDate|haltTime`,** so the same name halting twice
   in a session gives you two alerts, as it should.
 - **The loop never dies.** Feed 403s, malformed XML, DNS failures and ntfy
