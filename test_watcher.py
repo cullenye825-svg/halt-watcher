@@ -7,7 +7,7 @@ import json, tempfile, pathlib, sys, urllib.parse
 import halt_watcher as hw
 
 PUSHES = []
-hw.push = lambda cfg, title, body, priority="high", tags="", click=None: (
+hw.push = lambda cfg, title, body, priority="high", tags="", click=None, silent=False: (
     PUSHES.append({"title": title, "body": body, "priority": priority}) or True
 )
 
@@ -175,6 +175,31 @@ buf2 = io.StringIO()
 with contextlib.redirect_stdout(buf2):
     hw.log(f"percent-encoded leak: {urllib.parse.quote(TOK, safe='')}")
 check("url-encoded token also redacted", TOK.replace(":", "%3A") not in buf2.getvalue())
+
+print("\n8d. heartbeats are delivered SILENTLY (visible, but never ring the phone)")
+CAP2 = {}
+def fake2(req, timeout=10):
+    CAP2["data"] = req.data.decode()
+    class R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return R()
+_ur.urlopen = fake2
+hw.telegram_push(tg_cfg, "Halt watcher online", "Transport: telegram", silent=True)
+check("heartbeat is silent", "disable_notification=true" in CAP2["data"])
+hw.telegram_push(tg_cfg, "AAPL HALTED", "Reason: LUDP", silent=False)
+check("a real halt still rings", "disable_notification=false" in CAP2["data"])
+_ur.urlopen = _real
+
+print("\n8e. poll_once returns a count so the sign-off can report it")
+st_c = {"alerted": {}, "resumed": []}
+PUSHES.clear()
+n = run(feed([item("AAA", "LUDP", "10:00:00.000"),
+              item("BBB", "LUDP", "10:01:00.000"),
+              item("CCC", "T1",   "10:02:00.000")]), st_c)
+check("returns number actually pushed", n == 2)
+check("count matches pushes", n == len(PUSHES))
 
 print("\n9. state file round-trips and prunes")
 with tempfile.TemporaryDirectory() as d:

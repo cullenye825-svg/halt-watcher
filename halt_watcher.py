@@ -190,11 +190,12 @@ def _hdr(value: str) -> str:
 
 
 def ntfy_push(cfg: dict, title: str, body: str, priority: str = "high",
-              tags: str = "rotating_light", click: str | None = None) -> bool:
+              tags: str = "rotating_light", click: str | None = None,
+              silent: bool = False) -> bool:
     url = f"{cfg['server'].rstrip('/')}/{cfg['topic']}"
     headers = {
         "Title": _hdr(title),
-        "Priority": priority,
+        "Priority": "min" if silent else priority,
         "Tags": tags,
         "Content-Type": "text/plain; charset=utf-8",
     }
@@ -220,7 +221,8 @@ TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
-                  tags: str = "", click: str | None = None) -> bool:
+                  tags: str = "", click: str | None = None,
+                  silent: bool = False) -> bool:
     """Telegram has no title/priority fields, so the title becomes a bold first
     line. Delivery goes through Telegram's own push infrastructure, which on iOS
     does NOT depend on the app being woken for a background fetch -- that is the
@@ -234,8 +236,9 @@ def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
         "text": "\n".join(lines),
         "parse_mode": "HTML",
         "disable_web_page_preview": "true",
-        # false => Telegram plays the chat's notification sound
-        "disable_notification": "false",
+        # Heartbeats are delivered silently: visible in the chat for an
+        # at-a-glance liveness check, but they never make the phone ring.
+        "disable_notification": "true" if silent else "false",
     }).encode()
 
     url = TG_API.format(token=cfg["tg_token"])
@@ -258,11 +261,12 @@ def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
 
 
 def push(cfg: dict, title: str, body: str, priority: str = "high",
-         tags: str = "rotating_light", click: str | None = None) -> bool:
+         tags: str = "rotating_light", click: str | None = None,
+         silent: bool = False) -> bool:
     """Send through whichever backend is configured."""
     if cfg["backend"] == "telegram":
-        return telegram_push(cfg, title, body, priority, tags, click)
-    return ntfy_push(cfg, title, body, priority, tags, click)
+        return telegram_push(cfg, title, body, priority, tags, click, silent)
+    return ntfy_push(cfg, title, body, priority, tags, click, silent)
 
 
 def format_halt(h: dict) -> tuple[str, str, str, str]:
@@ -460,6 +464,9 @@ def main() -> None:
                    help="poll at full rate outside 09:25-16:10 ET too")
     p.add_argument("--test", action="store_true",
                    help="send one test push and exit")
+    p.add_argument("--announce", action="store_true",
+                   help="silently report going online / signing off, so a dead "
+                        "watcher looks different from a quiet market")
     args = p.parse_args()
 
     cfg = build_config(args)
@@ -516,19 +523,36 @@ def main() -> None:
         log(f"will exit at {stop_at:%H:%M} ET")
 
     log(f"backend={cfg['backend']}")
+
+    if args.announce:
+        push(cfg, "Halt watcher online",
+             f"Transport: {cfg['backend']}\n"
+             f"Polling every {args.interval:g}s\n"
+             f"Watching: {', '.join(sorted(cfg['reasons'])) or 'ALL codes'}\n"
+             f"Signing off at {args.until or 'n/a'} ET",
+             priority="default", tags="green_circle", silent=True)
+
     log(f"watching every {args.interval:g}s · reasons="
         f"{','.join(sorted(cfg['reasons'])) or 'ALL'}"
         f"{' · symbols=' + ','.join(sorted(cfg['symbols'])) if cfg['symbols'] else ''}")
 
     last_save = time.time()
+    sent_total = 0
     while True:
         if stop_at and datetime.now(ET_TZ) >= stop_at:
-            log("reached --until, exiting")
+            log(f"reached --until, exiting after {sent_total} alert(s)")
             save_state(state_path, state)
+            if args.announce:
+                push(cfg, "Halt watcher signing off",
+                     f"Covered until {args.until} ET\n"
+                     f"Alerts sent this session: {sent_total}\n"
+                     "If you expected an alert and got none, the market was "
+                     "quiet -- this watcher was up the whole time.",
+                     priority="default", tags="checkered_flag", silent=True)
             return
 
         try:
-            poll_once(cfg, state)
+            sent_total += poll_once(cfg, state)
         except Exception as exc:  # never let the loop die
             log(f"unexpected error: {exc}")
 

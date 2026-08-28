@@ -3,12 +3,11 @@
 Pushes US equity trading halts to your phone within ~8 seconds. Watches LULD
 volatility pauses and market-wide circuit breakers by default.
 
-**Status: live.** This repo runs itself on GitHub Actions — two scheduled legs
-cover 09:20–16:10 ET every weekday. The `NTFY_TOPIC` secret is set. Nothing to
-install. To check it end to end at any time, go to
-**Actions → Halt watcher (morning) → Run workflow**; a manual run bypasses the
-time guard, sends one test push to your phone, and watches for the number of
-minutes you enter (default 10).
+**Status: live.** Runs itself on GitHub Actions — two scheduled legs cover
+09:20–16:10 ET every weekday. Alerts go to **Telegram**. Nothing to install.
+To check it end to end, use **Actions → Halt watcher (morning) → Run workflow**;
+a manual run bypasses the time guard, sends two test pushes (one at each real
+alert priority) and watches for the minutes you enter.
 
 ## Which feed, and why not NYSE
 
@@ -54,8 +53,8 @@ watcher can send you a second, quieter "resuming at 11:14:01" ping.
 | `MWCQ` | Circuit breaker resumption |
 | `M` / `M1` / `M2` | Market-wide / corporate action / quotation not available |
 
-Circuit-breaker codes are sent at ntfy `urgent` priority so they punch through
-a silenced phone; single-name pauses go out at `high`.
+Circuit-breaker codes go out at the highest priority; single-name pauses at
+normal priority. Both ring the phone.
 
 Everything else (`T1` news pending, `T12`, `H10` SEC suspension, `IPO1`, `D`)
 is filtered out. Change that with `HALT_REASONS=all` or your own list.
@@ -64,19 +63,21 @@ is filtered out. Change that with `HALT_REASONS=all` or your own list.
 
 ## Setup
 
-### 1. Phone side (2 minutes)
+### 1. Phone side
 
-1. Install **ntfy** — [iOS](https://apps.apple.com/us/app/ntfy/id1625396347) /
-   [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy).
-2. Pick a topic name that nobody will guess. The topic name is the only
-   secret — anyone who knows it can subscribe to your alerts:
-   ```bash
-   echo "cullen-halts-$(openssl rand -hex 6)"
-   ```
-3. In the app: **+** → paste that topic → Subscribe.
-4. In the app's per-topic settings, turn **off** "respect mute" / set the
-   notification channel to Critical, so an urgent circuit-breaker alert still
-   sounds when your phone is on silent.
+Alerts are delivered by a **Telegram bot**, not ntfy.
+
+**Why not ntfy:** on iOS, ntfy has no foreground service and depends on iOS
+background-refresh tasks, which their own docs describe as running roughly once
+a day rather than on schedule. In practice notifications only appeared when the
+app was opened manually — useless for a pause that lasts five minutes. Telegram
+pushes through its own infrastructure and arrives in seconds. On Android, ntfy's
+instant-delivery service works fine and either would do.
+
+To set up: message **@BotFather**, `/newbot`, then store the token as the
+`TELEGRAM_TOKEN` secret and your numeric ID (from **@userinfobot**) as
+`TELEGRAM_CHAT_ID`. Give the bot chat its own notification sound so a halt is
+recognisable without looking.
 
 ### 2. Smoke test
 
@@ -84,7 +85,7 @@ Easiest: Actions tab → **Halt watcher (morning)** → **Run workflow**. The fi
 step sends a test push. Or from any machine with the repo checked out:
 
 ```bash
-export NTFY_TOPIC=cullen-halts-xxxxxxxxxxxx
+export TELEGRAM_TOKEN=... TELEGRAM_CHAT_ID=...
 python3 halt_watcher.py --test
 ```
 
@@ -106,7 +107,8 @@ This is what this repo already does. To rebuild it elsewhere:
 
 ```bash
 gh repo create halt-watcher --public --source=. --push
-gh secret set NTFY_TOPIC --body "your-topic-here"
+gh secret set TELEGRAM_TOKEN --body "..."
+gh secret set TELEGRAM_CHAT_ID --body "..."
 ```
 
 Then set **Settings → Actions → General → Workflow permissions** to *Read and
@@ -116,9 +118,11 @@ to test.
 Three things to know:
 
 - **The repo must be public** for unlimited minutes. A private repo gets 2,000
-  min/month; this burns ~8,000. Your topic lives in Actions Secrets, which are
-  encrypted and are not exposed in a public repo — but don't ever `echo` it in
-  a workflow step, because logs on a public repo are world-readable.
+  min/month; this burns ~8,000. Credentials live in Actions Secrets, which are
+  encrypted and never exposed in a public repo. Logs on a public repo ARE
+  world-readable, so `log()` scrubs every registered secret from its output —
+  the Telegram API puts the bot token in the URL, and an exception carrying
+  that URL would otherwise print it.
 - **Cron is UTC and drifts.** GitHub can delay a scheduled run by 5–15 minutes
   under load, so each leg is scheduled 10 minutes early. Both an EDT and an EST
   cron are registered and a guard step exits the wrong one — no DST maintenance.
@@ -174,7 +178,8 @@ scheduler — it persists state to `--state-file` between runs.
 --no-resume           skip the "resuming at HH:MM:SS" follow-up ping
 --all-hours           poll fast outside the session too
 --state-file PATH     where dedupe state lives
---test                send one test push and exit
+--announce            silent "online" / "signing off" heartbeats
+--test                send two test pushes (high + urgent) and exit
 ```
 
 ## Behaviour worth knowing
@@ -185,8 +190,16 @@ scheduler — it persists state to `--state-file` between runs.
   pings. Every halt discovered after that pings.
 - **Dedupe key is `symbol|haltDate|haltTime`,** so the same name halting twice
   in a session gives you two alerts, as it should.
-- **The loop never dies.** Feed 403s, malformed XML, DNS failures and ntfy
+- **The loop never dies.** Feed 403s, malformed XML, DNS failures and delivery
   outages are all caught and logged; the next poll just tries again.
+- **Silence is never ambiguous.** With `--announce` (on by default for the
+  scheduled legs) each leg sends a silent "online" message when it starts and a
+  silent "signing off, N alerts sent" when it ends. Four quiet Telegram
+  messages a day bracket the session, so a leg that failed to start looks
+  different from a market with no halts.
+- **A running job keeps the code it started with.** Pushing a fix mid-session
+  does NOT change a leg that is already running — it will finish the day on the
+  old commit. Re-dispatch the leg if a change must take effect immediately.
 - **Tapping the notification** opens that symbol's TradingView chart. Change
   the `click` URL in `poll_once` if you'd rather it deep-link somewhere else.
 
