@@ -158,7 +158,9 @@ check("chat id sent", "chat_id=999" in CAPTURED["data"])
 print("\n8c. SECURITY: a bot token must never reach the log")
 import io, contextlib
 hw._SECRETS.clear()
-TOK = "8852800107:AAGioSI_fBKRmiqUCdegeNlozG6baVCN-40"
+# A SYNTHETIC value. Never put a real credential in a test fixture --
+# this file is committed to a public repo.
+TOK = "0000000000:FAKE-TEST-TOKEN-not-a-real-credential"
 hw.register_secret(TOK)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
