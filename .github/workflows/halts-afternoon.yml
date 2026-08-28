@@ -68,4 +68,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           POLL_SECONDS: '8'
           HALT_STATE: ${{ runner.temp }}/halt_state.json
-        run: python3 halt_watcher.py --all-hours --until "${{ steps.guard.outputs.until }}"
+        # --announce only on the real scheduled legs: two silent Telegram
+        # messages a day bracketing each leg, so a leg that never started is
+        # obvious instead of looking like a quiet market.
+        run: |
+          python3 halt_watcher.py --all-hours \
+            ${{ github.event_name == 'schedule' && '--announce' || '' }} \
+            --until "${{ steps.guard.outputs.until }}"
