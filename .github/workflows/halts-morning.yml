@@ -1,0 +1,43 @@
+name: Halt watcher (morning)
+
+# GitHub caps a single job at 6 hours, so the session is split into a morning
+# and an afternoon leg. Cron here is ALWAYS UTC, so each leg is scheduled twice
+# (once for EDT, once for EST) and a guard step exits the wrong one immediately.
+
+on:
+  schedule:
+    - cron: '20 13 * * 1-5'   # 09:20 ET when US is on EDT
+    - cron: '20 14 * * 1-5'   # 09:20 ET when US is on EST
+  workflow_dispatch:           # lets you start it by hand from the Actions tab
+
+concurrency:
+  group: halt-watcher-morning
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 260
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only continue if it is really ~09:20 in New York
+        id: guard
+        run: |
+          ET=$(TZ=America/New_York date +%H%M)
+          echo "New York time is $ET"
+          if [ "$ET" -lt "0900" ] || [ "$ET" -gt "0945" ]; then
+            echo "Wrong DST leg — exiting cleanly."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Watch halts until 12:50 ET
+        if: steps.guard.outputs.go == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+          POLL_SECONDS: '8'
+          HALT_STATE: ${{ runner.temp }}/halt_state.json
+        run: python3 halt_watcher.py --until 12:50

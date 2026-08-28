@@ -1,0 +1,43 @@
+name: Halt watcher (afternoon)
+
+# Starts 5 minutes before the morning leg ends so there is no coverage gap.
+# The overlap is harmless: a fresh job "primes" from the current feed on its
+# first poll and never alerts on halts it finds already sitting there.
+
+on:
+  schedule:
+    - cron: '45 16 * * 1-5'   # 12:45 ET when US is on EDT
+    - cron: '45 17 * * 1-5'   # 12:45 ET when US is on EST
+  workflow_dispatch:
+
+concurrency:
+  group: halt-watcher-afternoon
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 260
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Only continue if it is really ~12:45 in New York
+        id: guard
+        run: |
+          ET=$(TZ=America/New_York date +%H%M)
+          echo "New York time is $ET"
+          if [ "$ET" -lt "1230" ] || [ "$ET" -gt "1310" ]; then
+            echo "Wrong DST leg — exiting cleanly."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Watch halts until 16:10 ET
+        if: steps.guard.outputs.go == 'true'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+          POLL_SECONDS: '8'
+          HALT_STATE: ${{ runner.temp }}/halt_state.json
+        run: python3 halt_watcher.py --until 16:10
