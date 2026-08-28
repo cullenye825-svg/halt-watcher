@@ -8,7 +8,12 @@ on:
   schedule:
     - cron: '20 13 * * 1-5'   # 09:20 ET when US is on EDT
     - cron: '20 14 * * 1-5'   # 09:20 ET when US is on EST
-  workflow_dispatch:           # lets you start it by hand from the Actions tab
+  workflow_dispatch:           # start it by hand from the Actions tab
+    inputs:
+      minutes:
+        description: 'Manual run: how many minutes to watch for'
+        required: false
+        default: '10'
 
 concurrency:
   group: halt-watcher-morning
@@ -21,23 +26,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Only continue if it is really ~09:20 in New York
+      - name: Decide whether to run, and until when
         id: guard
         run: |
           ET=$(TZ=America/New_York date +%H%M)
           echo "New York time is $ET"
-          if [ "$ET" -lt "0900" ] || [ "$ET" -gt "0945" ]; then
-            echo "Wrong DST leg — exiting cleanly."
-            echo "go=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # A manual run is always allowed and is short by default, so a test
+            # click can't accidentally pin a runner for hours.
+            MINS="${{ inputs.minutes }}"
+            UNTIL=$(TZ=America/New_York date -d "+${MINS:-10} minutes" +%H:%M)
+            echo "Manual run — watching until $UNTIL ET."
+            echo "go=true"        >> "$GITHUB_OUTPUT"
+            echo "until=$UNTIL"   >> "$GITHUB_OUTPUT"
+          elif [ "$ET" -ge "0900" ] && [ "$ET" -le "0945" ]; then
+            echo "go=true"        >> "$GITHUB_OUTPUT"
+            echo "until=12:50"    >> "$GITHUB_OUTPUT"
           else
-            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "Wrong DST leg — exiting cleanly."
+            echo "go=false"       >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Watch halts until 12:50 ET
+      # A manual run buzzes the phone once, so a test click verifies the whole
+      # chain: secret -> script -> ntfy -> your lock screen.
+      - name: Send a test push (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python3 halt_watcher.py --test
+
+      - name: Watch halts
         if: steps.guard.outputs.go == 'true'
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           POLL_SECONDS: '8'
           HALT_STATE: ${{ runner.temp }}/halt_state.json
-        run: python3 halt_watcher.py --until 12:50
+        run: python3 halt_watcher.py --all-hours --until "${{ steps.guard.outputs.until }}"

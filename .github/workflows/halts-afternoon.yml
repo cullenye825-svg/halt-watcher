@@ -9,6 +9,11 @@ on:
     - cron: '45 16 * * 1-5'   # 12:45 ET when US is on EDT
     - cron: '45 17 * * 1-5'   # 12:45 ET when US is on EST
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Manual run: how many minutes to watch for'
+        required: false
+        default: '10'
 
 concurrency:
   group: halt-watcher-afternoon
@@ -21,23 +26,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Only continue if it is really ~12:45 in New York
+      - name: Decide whether to run, and until when
         id: guard
         run: |
           ET=$(TZ=America/New_York date +%H%M)
           echo "New York time is $ET"
-          if [ "$ET" -lt "1230" ] || [ "$ET" -gt "1310" ]; then
-            echo "Wrong DST leg — exiting cleanly."
-            echo "go=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MINS="${{ inputs.minutes }}"
+            UNTIL=$(TZ=America/New_York date -d "+${MINS:-10} minutes" +%H:%M)
+            echo "Manual run — watching until $UNTIL ET."
+            echo "go=true"        >> "$GITHUB_OUTPUT"
+            echo "until=$UNTIL"   >> "$GITHUB_OUTPUT"
+          elif [ "$ET" -ge "1230" ] && [ "$ET" -le "1310" ]; then
+            echo "go=true"        >> "$GITHUB_OUTPUT"
+            echo "until=16:10"    >> "$GITHUB_OUTPUT"
           else
-            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "Wrong DST leg — exiting cleanly."
+            echo "go=false"       >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Watch halts until 16:10 ET
+      # A manual run buzzes the phone once, so a test click verifies the whole
+      # chain: secret -> script -> ntfy -> your lock screen.
+      - name: Send a test push (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python3 halt_watcher.py --test
+
+      - name: Watch halts
         if: steps.guard.outputs.go == 'true'
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           POLL_SECONDS: '8'
           HALT_STATE: ${{ runner.temp }}/halt_state.json
-        run: python3 halt_watcher.py --until 16:10
+        run: python3 halt_watcher.py --all-hours --until "${{ steps.guard.outputs.until }}"
