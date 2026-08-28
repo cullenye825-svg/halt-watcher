@@ -7,7 +7,7 @@ import json, tempfile, pathlib, sys
 import halt_watcher as hw
 
 PUSHES = []
-hw.ntfy_push = lambda cfg, title, body, priority="high", tags="", click=None: (
+hw.push = lambda cfg, title, body, priority="high", tags="", click=None: (
     PUSHES.append({"title": title, "body": body, "priority": priority}) or True
 )
 
@@ -32,7 +32,8 @@ def item(sym, reason, htime, name="Test Co", market="NASDAQ",
             f"<ndaq:ResumptionTradeTime>{rtrade}</ndaq:ResumptionTradeTime>"
             f"</item>")
 
-CFG = {"topic": "t", "server": "https://ntfy.sh", "token": "",
+CFG = {"backend": "ntfy", "tg_token": "", "chat_id": "",
+       "topic": "t", "server": "https://ntfy.sh", "token": "",
        "reasons": set(hw.DEFAULT_REASONS), "symbols": set(), "notify_resume": True}
 
 def run(xml, state, prime=False):
@@ -128,6 +129,31 @@ cfg_sym = dict(CFG, symbols={"AAPL"})
 hw.fetch_feed = lambda timeout=15: feed([item("WCT", "LUDP", "12:00:00.000")])
 hw.poll_once(cfg_sym, {"alerted": {}, "resumed": []})
 check("non-watchlist suppressed", len(PUSHES) == 0)
+
+print("\n8b. telegram payload escapes HTML (a name with & or < would 400)")
+import urllib.request as _ur
+CAPTURED = {}
+def fake_urlopen(req, timeout=10):
+    CAPTURED["url"] = req.full_url
+    CAPTURED["data"] = req.data.decode()
+    class R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return R()
+_real = _ur.urlopen
+_ur.urlopen = fake_urlopen
+tg_cfg = {"backend": "telegram", "tg_token": "123:ABC", "chat_id": "999"}
+ok = hw.telegram_push(tg_cfg, "SWBI HALTED - LULD volatility pause",
+                      "Smith & Wesson Brands <Class A>\nReason: LUDP",
+                      click="https://example.com/?a=1&b=2")
+_ur.urlopen = _real
+check("telegram push returns True on 200", ok is True)
+check("ampersand escaped", "%26amp%3B" in CAPTURED["data"])
+check("angle brackets escaped", "%26lt%3B" in CAPTURED["data"])
+check("token in URL not body", "123%3AABC" not in CAPTURED["data"] and "bot123:ABC" in CAPTURED["url"])
+check("sound enabled", "disable_notification=false" in CAPTURED["data"])
+check("chat id sent", "chat_id=999" in CAPTURED["data"])
 
 print("\n9. state file round-trips and prunes")
 with tempfile.TemporaryDirectory() as d:

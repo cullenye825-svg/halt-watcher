@@ -15,7 +15,9 @@ State (which halts you've already been pinged about) lives in --state-file so
 --once mode doesn't re-alert, and so a daemon restart doesn't spam you.
 
 Env vars (or CLI flags, flags win):
-  NTFY_TOPIC     required   your secret ntfy topic, e.g. cullen-halts-x7k2p9
+  TELEGRAM_TOKEN    bot token from @BotFather (preferred transport)
+  TELEGRAM_CHAT_ID  the chat to send to
+  NTFY_TOPIC        fallback transport if the Telegram vars are unset
   NTFY_SERVER    optional   default https://ntfy.sh
   NTFY_TOKEN     optional   Bearer token if you use a protected topic
   HALT_REASONS   optional   comma-separated reason codes, default LULD + MWC
@@ -27,12 +29,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html
 import json
 import os
 import random
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -190,6 +194,55 @@ def ntfy_push(cfg: dict, title: str, body: str, priority: str = "high",
     return False
 
 
+TG_API = "https://api.telegram.org/bot{token}/sendMessage"
+
+
+def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
+                  tags: str = "", click: str | None = None) -> bool:
+    """Telegram has no title/priority fields, so the title becomes a bold first
+    line. Delivery goes through Telegram's own push infrastructure, which on iOS
+    does NOT depend on the app being woken for a background fetch -- that is the
+    whole reason we are not on ntfy."""
+    lines = [f"<b>{html.escape(title)}</b>", html.escape(body)]
+    if click:
+        lines.append(f'<a href="{html.escape(click, quote=True)}">Open chart</a>')
+
+    data = urllib.parse.urlencode({
+        "chat_id": cfg["chat_id"],
+        "text": "\n".join(lines),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true",
+        # false => Telegram plays the chat's notification sound
+        "disable_notification": "false",
+    }).encode()
+
+    url = TG_API.format(token=cfg["tg_token"])
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:200]
+            log(f"  telegram attempt {attempt + 1} HTTP {exc.code}: {detail}")
+            if exc.code in (400, 401, 403):
+                return False          # bad token / chat id: retrying won't help
+            time.sleep(1.5 * (attempt + 1))
+        except Exception as exc:
+            log(f"  telegram attempt {attempt + 1} failed: {exc}")
+            time.sleep(1.5 * (attempt + 1))
+    return False
+
+
+def push(cfg: dict, title: str, body: str, priority: str = "high",
+         tags: str = "rotating_light", click: str | None = None) -> bool:
+    """Send through whichever backend is configured."""
+    if cfg["backend"] == "telegram":
+        return telegram_push(cfg, title, body, priority, tags, click)
+    return ntfy_push(cfg, title, body, priority, tags, click)
+
+
 def format_halt(h: dict) -> tuple[str, str, str, str]:
     reason = REASON_TEXT.get(h["reason"], h["reason"])
     wide = h["reason"] in MARKET_WIDE
@@ -290,7 +343,7 @@ def poll_once(cfg: dict, state: dict, prime: bool = False) -> int:
                 continue
             title, body, priority, tags = format_halt(h)
             click = f"https://www.tradingview.com/chart/?symbol={h['symbol']}"
-            if ntfy_push(cfg, title, body, priority, tags, click):
+            if push(cfg, title, body, priority, tags, click):
                 log(f"PUSH halt  {h['symbol']:<8} {h['reason']:<5} {h['halt_time']}")
                 sent += 1
             state["alerted"][key] = now
@@ -301,7 +354,7 @@ def poll_once(cfg: dict, state: dict, prime: bool = False) -> int:
             body = (f"{h['symbol']}  ({h['market']})\n"
                     f"Resumes trading {h['resume_trade']} ET\n"
                     f"Was halted {h['halt_time']} ET · {h['reason']}")
-            if ntfy_push(cfg, f"{h['symbol']} resuming", body,
+            if push(cfg, f"{h['symbol']} resuming", body,
                          priority="default", tags="arrow_forward"):
                 log(f"PUSH resume {h['symbol']:<8} {h['resume_trade']}")
                 sent += 1
@@ -324,9 +377,17 @@ def in_session(dt: datetime | None = None) -> bool:
 # --------------------------------------------------------------------------- #
 
 def build_config(args) -> dict:
+    # Telegram wins if configured; ntfy stays supported as a fallback.
+    tg_token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     topic = args.topic or os.environ.get("NTFY_TOPIC", "")
-    if not topic:
-        sys.exit("ERROR: set NTFY_TOPIC (env var) or pass --topic")
+
+    if tg_token and chat_id:
+        backend = "telegram"
+    elif topic:
+        backend = "ntfy"
+    else:
+        sys.exit("ERROR: set TELEGRAM_TOKEN + TELEGRAM_CHAT_ID, or NTFY_TOPIC")
 
     raw_reasons = args.reasons or os.environ.get("HALT_REASONS", "")
     if raw_reasons.strip().lower() in ("all", "*"):
@@ -340,6 +401,9 @@ def build_config(args) -> dict:
     symbols = {s.strip().upper() for s in raw_symbols.split(",") if s.strip()}
 
     return {
+        "backend": backend,
+        "tg_token": tg_token,
+        "chat_id": chat_id,
         "topic": topic,
         "server": args.server or os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
         "token": os.environ.get("NTFY_TOKEN", ""),
@@ -382,7 +446,7 @@ def main() -> None:
         # what a real halt actually uses, so that is what we test.
         watching = ", ".join(sorted(cfg["reasons"])) or "ALL codes"
 
-        ok_high = ntfy_push(
+        ok_high = push(
             cfg, "TEST - single-name halt (priority high)",
             "This is exactly how a LULD pause on one ticker arrives.\n"
             "Priority: high (4)\n"
@@ -392,7 +456,7 @@ def main() -> None:
 
         time.sleep(3)
 
-        ok_urgent = ntfy_push(
+        ok_urgent = push(
             cfg, "TEST - circuit breaker (priority urgent)",
             "This is how a market-wide circuit breaker arrives.\n"
             "Priority: urgent (5) - should override silent mode.\n"
@@ -425,6 +489,7 @@ def main() -> None:
             stop_at += timedelta(days=1)
         log(f"will exit at {stop_at:%H:%M} ET")
 
+    log(f"backend={cfg['backend']}")
     log(f"watching every {args.interval:g}s · reasons="
         f"{','.join(sorted(cfg['reasons'])) or 'ALL'}"
         f"{' · symbols=' + ','.join(sorted(cfg['symbols'])) if cfg['symbols'] else ''}")
