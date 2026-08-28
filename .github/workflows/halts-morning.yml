@@ -15,6 +15,12 @@ on:
         required: false
         default: '10'
 
+# Least privilege: these jobs only need to read the repo. The repo-wide
+# default is read/write (the keepalive job needs it to push), and a workflow
+# can only REDUCE that ceiling, never raise it -- so we reduce it here.
+permissions:
+  contents: read
+
 concurrency:
   group: halt-watcher-morning
   cancel-in-progress: false
