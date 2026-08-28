@@ -3,7 +3,7 @@
 Run:  python3 test_watcher.py
 No network, no pushes — ntfy_push is stubbed out.
 """
-import json, tempfile, pathlib, sys
+import json, tempfile, pathlib, sys, urllib.parse
 import halt_watcher as hw
 
 PUSHES = []
@@ -154,6 +154,27 @@ check("angle brackets escaped", "%26lt%3B" in CAPTURED["data"])
 check("token in URL not body", "123%3AABC" not in CAPTURED["data"] and "bot123:ABC" in CAPTURED["url"])
 check("sound enabled", "disable_notification=false" in CAPTURED["data"])
 check("chat id sent", "chat_id=999" in CAPTURED["data"])
+
+print("\n8c. SECURITY: a bot token must never reach the log")
+import io, contextlib
+hw._SECRETS.clear()
+TOK = "8852800107:AAGioSI_fBKRmiqUCdegeNlozG6baVCN-40"
+hw.register_secret(TOK)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    # the shape of a real urllib failure: the URL (with token) inside the message
+    hw.log(f"telegram attempt 1 failed: <urlopen error for "
+           f"https://api.telegram.org/bot{TOK}/sendMessage>")
+    hw.log("harmless line")
+out = buf.getvalue()
+check("raw token absent from log", TOK not in out)
+check("redaction marker present", "***REDACTED***" in out)
+check("normal lines unaffected", "harmless line" in out)
+
+buf2 = io.StringIO()
+with contextlib.redirect_stdout(buf2):
+    hw.log(f"percent-encoded leak: {urllib.parse.quote(TOK, safe='')}")
+check("url-encoded token also redacted", TOK.replace(":", "%3A") not in buf2.getvalue())
 
 print("\n9. state file round-trips and prunes")
 with tempfile.TemporaryDirectory() as d:

@@ -106,8 +106,30 @@ REASON_TEXT = {
 MARKET_WIDE = {"MWC0", "MWC1", "MWC2", "MWC3", "MWCQ"}
 
 
+# Values that must never reach stdout. Actions logs on a PUBLIC repo are
+# world-readable, and the Telegram API puts the bot token in the URL -- so any
+# exception carrying that URL would print the token. GitHub also masks
+# registered secrets, but that is exact-match only; this is the belt to its
+# braces, and it also protects local runs where no masking exists.
+_SECRETS: set[str] = set()
+
+
+def register_secret(value: str) -> None:
+    if value and len(value) >= 8:
+        _SECRETS.add(value)
+        _SECRETS.add(urllib.parse.quote(value, safe=""))
+
+
+def redact(text: str) -> str:
+    for secret in _SECRETS:
+        if secret in text:
+            text = text.replace(secret, "***REDACTED***")
+    return text
+
+
 def log(msg: str) -> None:
-    print(f"{datetime.now(ET_TZ):%Y-%m-%d %H:%M:%S %Z}  {msg}", flush=True)
+    print(f"{datetime.now(ET_TZ):%Y-%m-%d %H:%M:%S %Z}  {redact(str(msg))}",
+          flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -399,6 +421,10 @@ def build_config(args) -> dict:
 
     raw_symbols = args.symbols or os.environ.get("HALT_SYMBOLS", "")
     symbols = {s.strip().upper() for s in raw_symbols.split(",") if s.strip()}
+
+    register_secret(tg_token)
+    register_secret(os.environ.get("NTFY_TOKEN", ""))
+    register_secret(topic)
 
     return {
         "backend": backend,
