@@ -376,12 +376,32 @@ def main() -> None:
     state_path = Path(args.state_file)
 
     if args.test:
-        ok = ntfy_push(cfg, "Halt watcher online",
-                       "If you can read this, push delivery works.\n"
-                       f"Watching: {', '.join(sorted(cfg['reasons'])) or 'ALL codes'}",
-                       priority="default", tags="white_check_mark")
-        log("test push sent" if ok else "test push FAILED")
-        sys.exit(0 if ok else 1)
+        # Send at the SAME priorities real alerts use. A "default" priority test
+        # proves nothing: both iOS and Android are free to batch priority-3
+        # messages and deliver them silently, minutes late. Priority 4 and 5 are
+        # what a real halt actually uses, so that is what we test.
+        watching = ", ".join(sorted(cfg["reasons"])) or "ALL codes"
+
+        ok_high = ntfy_push(
+            cfg, "TEST - single-name halt (priority high)",
+            "This is exactly how a LULD pause on one ticker arrives.\n"
+            "Priority: high (4)\n"
+            f"Watching: {watching}",
+            priority="high", tags="octagonal_sign")
+        log("high-priority test push sent" if ok_high else "high-priority test FAILED")
+
+        time.sleep(3)
+
+        ok_urgent = ntfy_push(
+            cfg, "TEST - circuit breaker (priority urgent)",
+            "This is how a market-wide circuit breaker arrives.\n"
+            "Priority: urgent (5) - should override silent mode.\n"
+            "If this one is silent, the topic needs its notification\n"
+            "settings changed in the ntfy app.",
+            priority="urgent", tags="rotating_light,bangbang")
+        log("urgent test push sent" if ok_urgent else "urgent test FAILED")
+
+        sys.exit(0 if (ok_high and ok_urgent) else 1)
 
     state = load_state(state_path)
 
