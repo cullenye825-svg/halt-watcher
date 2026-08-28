@@ -51,13 +51,15 @@ jobs:
       - name: Send a test push (manual runs only)
         if: github.event_name == 'workflow_dispatch'
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 halt_watcher.py --test
 
       - name: Watch halts
         if: steps.guard.outputs.go == 'true'
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           POLL_SECONDS: '8'
           HALT_STATE: ${{ runner.temp }}/halt_state.json
         run: python3 halt_watcher.py --all-hours --until "${{ steps.guard.outputs.until }}"
