@@ -1,13 +1,18 @@
 name: Halt watcher (afternoon)
 
-# Starts 5 minutes before the morning leg ends so there is no coverage gap.
-# The overlap is harmless: a fresh job "primes" from the current feed on its
-# first poll and never alerts on halts it finds already sitting there.
+# GitHub's scheduled trigger is BEST EFFORT. It is routinely late and is
+# sometimes dropped entirely -- on 2026-08-31 the morning fire never happened at
+# all and the session went unwatched. So we no longer rely on a single fire:
+# the schedule now attempts every 30 minutes across the whole leg, and any
+# attempt that finds a watcher already running exits in seconds.
+#
+# A dropped fire therefore costs at most ~30 minutes instead of the whole day.
+# The crons below deliberately cover BOTH US DST offsets; the ET window guard
+# is what actually decides whether a given attempt should watch.
 
 on:
   schedule:
-    - cron: '45 16 * * 1-5'   # 12:45 ET when US is on EDT
-    - cron: '45 17 * * 1-5'   # 12:45 ET when US is on EST
+    - cron: '0,30 16-20 * * 1-5'   # every 30 min, covers 12:30-15:30 ET in EDT and EST
   workflow_dispatch:
     inputs:
       minutes:
@@ -15,12 +20,14 @@ on:
         required: false
         default: '10'
 
-# Least privilege: these jobs only need to read the repo. The repo-wide
-# default is read/write (the keepalive job needs it to push), and a workflow
-# can only REDUCE that ceiling, never raise it -- so we reduce it here.
+# contents:read to check out; actions:read so the guard can ask whether a
+# sibling run is already watching.
 permissions:
   contents: read
+  actions: read
 
+# Redundant fires must NOT cancel the live watcher, and must not pile up in a
+# queue either -- the guard exits them immediately instead.
 concurrency:
   group: halt-watcher-afternoon
   cancel-in-progress: false
@@ -34,6 +41,8 @@ jobs:
 
       - name: Decide whether to run, and until when
         id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           ET=$(TZ=America/New_York date +%H%M)
           echo "New York time is $ET"
@@ -41,19 +50,38 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MINS="${{ inputs.minutes }}"
             UNTIL=$(TZ=America/New_York date -d "+${MINS:-10} minutes" +%H:%M)
-            echo "Manual run — watching until $UNTIL ET."
-            echo "go=true"        >> "$GITHUB_OUTPUT"
-            echo "until=$UNTIL"   >> "$GITHUB_OUTPUT"
-          elif [ "$ET" -ge "1230" ] && [ "$ET" -le "1310" ]; then
-            echo "go=true"        >> "$GITHUB_OUTPUT"
-            echo "until=16:10"    >> "$GITHUB_OUTPUT"
-          else
-            echo "Wrong DST leg — exiting cleanly."
-            echo "go=false"       >> "$GITHUB_OUTPUT"
+            echo "Manual run - watching until $UNTIL ET."
+            echo "go=true"      >> "$GITHUB_OUTPUT"
+            echo "until=$UNTIL" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
+          # Widened window: any scheduled attempt between 12:30 and 15:30 ET is
+          # a legitimate start, because an earlier one may have been dropped.
+          if [ "$ET" -lt "1230" ] || [ "$ET" -gt "1530" ]; then
+            echo "Outside the afternoon window - exiting cleanly."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Is a sibling already watching? Count includes this run, so >1 means
+          # someone else got there first. Fail OPEN: if the API call fails we
+          # would rather run a duplicate than leave the market unwatched.
+          RUNNING=$(gh run list --workflow halts-afternoon.yml \
+                      --status in_progress --json databaseId --jq 'length' \
+                    2>/dev/null || echo 1)
+          echo "in-progress runs of this workflow: $RUNNING"
+          if [ "${RUNNING:-1}" -gt 1 ]; then
+            echo "Another leg is already watching - exiting cleanly."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "go=true"       >> "$GITHUB_OUTPUT"
+          echo "until=16:10"   >> "$GITHUB_OUTPUT"
+
       # A manual run buzzes the phone once, so a test click verifies the whole
-      # chain: secret -> script -> ntfy -> your lock screen.
+      # chain: secret -> script -> Telegram -> your lock screen.
       - name: Send a test push (manual runs only)
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -68,9 +96,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           POLL_SECONDS: '8'
           HALT_STATE: ${{ runner.temp }}/halt_state.json
-        # --announce only on the real scheduled legs: two silent Telegram
-        # messages a day bracketing each leg, so a leg that never started is
-        # obvious instead of looking like a quiet market.
         run: |
           python3 halt_watcher.py --all-hours \
             ${{ github.event_name == 'schedule' && '--announce' || '' }} \
