@@ -21,6 +21,9 @@ name: Halt relay
 # someone dispatches it by hand. The silent Telegram "online" heartbeat at the
 # start of every link is the tripwire -- if those stop arriving, the chain broke.
 #
+# A link with minutes < 60 is treated as a one-off TEST: it watches, but never
+# hands off. That keeps experiments from spawning an unstoppable fast chain.
+#
 # To start it:  Actions -> Halt relay -> Run workflow  (defaults are correct)
 # To stop it:   cancel the in-flight run(s); no successor will be created.
 
@@ -91,6 +94,15 @@ jobs:
           # stops, giving a real overlap rather than a gap. If the watcher
           # below dies early, the `wait` still lets this timer complete, so a
           # crashed watcher does not by itself break the chain.
+          # A short link is a TEST. Tests must be self-terminating: a 6-minute
+          # link handing off every 3 minutes creates a chain that spawns
+          # successors faster than a human can cancel them (learned the hard
+          # way on 2026-09-01). Below 60 minutes, never hand off.
+          if [ "$MINUTES" -lt 60 ]; then
+            echo "minutes=$MINUTES is a test link - handoff suppressed"
+            HANDOFF=false
+          fi
+
           if [ "${HANDOFF:-true}" = "true" ]; then
             (
               sleep "$HANDOFF_AT"
@@ -132,7 +144,9 @@ jobs:
                      --json databaseId --jq "[.[] | select(.databaseId != ${{ github.run_id }})] | length" \
                    2>/dev/null || echo 99)
           echo "other links in flight at exit: $OTHERS"
-          if [ "${OTHERS:-99}" -eq 0 ]; then
+          if [ "${{ inputs.minutes }}" -lt 60 ]; then
+            echo "test link - not resurrecting the chain"
+          elif [ "${OTHERS:-99}" -eq 0 ]; then
             echo "no successor found - dispatching one"
             gh workflow run halt-relay.yml \
                -f minutes="${{ inputs.minutes }}" -f handoff=true
