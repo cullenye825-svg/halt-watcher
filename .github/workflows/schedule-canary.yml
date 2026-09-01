@@ -1,0 +1,66 @@
+name: Schedule canary
+
+# A measurement instrument, not part of the alerting path.
+#
+# We cannot see inside GitHub's scheduler, and GitHub exposes no API that says
+# why a cron fire was dropped. So instead we measure the scheduler's behaviour
+# directly: this fires every 30 minutes, around the clock, and records how late
+# each dispatch actually was. Runs take ~10 seconds.
+#
+# After a day of data we can answer, with evidence rather than inference:
+#   * what fraction of scheduled fires GitHub actually delivers
+#   * how late the survivors are
+#   * whether lateness depends on time of day (the "high load" hypothesis)
+#   * whether the delivery rate decays as the repo goes quiet since last push
+#
+# Minutes are :11 and :41 -- deliberately off :00/:30, which GitHub identifies
+# as the high-load minutes most likely to be delayed or dropped.
+#
+# Delete this workflow once the scheduling question is settled.
+
+on:
+  schedule:
+    - cron: '11,41 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report how late this dispatch was
+        run: |
+          NOW_EPOCH=$(date -u +%s)
+          NOW=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          # Nearest earlier :11 or :41 slot is the fire this run belongs to.
+          MIN=$(date -u +%M | sed 's/^0//')
+          MIN=${MIN:-0}
+          if   [ "$MIN" -ge 41 ]; then SLOT_MIN=41
+          elif [ "$MIN" -ge 11 ]; then SLOT_MIN=11
+          else SLOT_MIN=41; fi
+
+          SLOT=$(date -u -d "$(date -u +%Y-%m-%dT%H):${SLOT_MIN}:00Z" +%s)
+          # If we picked :41 while before :11, the slot was in the previous hour.
+          [ "$SLOT" -gt "$NOW_EPOCH" ] && SLOT=$((SLOT - 3600))
+
+          LATE=$(( NOW_EPOCH - SLOT ))
+          ET=$(TZ=America/New_York date '+%H:%M %Z')
+
+          echo "event=${{ github.event_name }}"
+          echo "now_utc=$NOW  (${ET})"
+          echo "scheduled_slot_min=:$SLOT_MIN"
+          echo "late_seconds=$LATE  (~$((LATE / 60)) min)"
+
+          {
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| event | ${{ github.event_name }} |"
+            echo "| dispatched (UTC) | $NOW |"
+            echo "| local | $ET |"
+            echo "| slot | :$SLOT_MIN |"
+            echo "| **late by** | **$((LATE / 60)) min $((LATE % 60))s** |"
+          } >> "$GITHUB_STEP_SUMMARY"
