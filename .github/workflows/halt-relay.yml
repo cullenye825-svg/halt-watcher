@@ -1,0 +1,130 @@
+name: Halt relay
+
+# Self-perpetuating watcher. NO `schedule:` trigger anywhere in this file.
+#
+# WHY: GitHub's cron is effectively dead for this repo. Measured 2026-08-31 to
+# 2026-09-01: ~2 of ~28 due fires delivered, survivors 51 min to 7h33m late. A
+# purpose-built canary at off-peak minutes, deployed by a fresh push (GitHub's
+# own documented "resync" remedy), delivered 0 of 5 fires in 2.5 hours.
+# `workflow_dispatch`, by contrast, has fired 12 of 12 times, instantly.
+#
+# So the chain runs on workflow_dispatch alone. Each link watches for `minutes`
+# and, three minutes before it stops, dispatches its own successor. The overlap
+# means handover has no coverage gap.
+#
+# This works with the built-in GITHUB_TOKEN because workflow_dispatch is one of
+# the two documented exceptions to "events triggered by the GITHUB_TOKEN will
+# not create a new workflow run". No personal access token is required.
+#
+# THE CHAIN'S WEAKNESS: it is a chain. If a link is cancelled or its runner
+# dies before the handoff fires, the chain stops and stays stopped until
+# someone dispatches it by hand. The silent Telegram "online" heartbeat at the
+# start of every link is the tripwire -- if those stop arriving, the chain broke.
+#
+# To start it:  Actions -> Halt relay -> Run workflow  (defaults are correct)
+# To stop it:   cancel the in-flight run(s); no successor will be created.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Minutes this link watches before handing off'
+        required: false
+        default: '330'
+      handoff:
+        description: 'Dispatch a successor? Set false for a one-off test link.'
+        required: false
+        default: 'true'
+
+permissions:
+  contents: read
+  actions: write        # required to dispatch the successor
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    # Job ceiling is 6h. 330 min of watching + overlap + slack stays under it.
+    timeout-minutes: 345
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse to pile up
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Normal states are 1 in-flight link, or 2 during the 3-minute
+          # handover overlap. Anything more means duplicate dispatches, so this
+          # link stands down and lets the existing ones carry on.
+          N=$(gh run list --workflow halt-relay.yml --status in_progress \
+                --json databaseId --jq 'length' 2>/dev/null || echo 1)
+          echo "relay links in flight (including me): $N"
+          if [ "${N:-1}" -gt 2 ]; then
+            echo "Too many links in flight - standing down."
+            exit 1
+          fi
+
+      - name: Watch halts, and hand off before exiting
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          POLL_SECONDS: '8'
+          HALT_STATE: ${{ runner.temp }}/halt_state.json
+          GH_TOKEN: ${{ github.token }}
+          MINUTES: ${{ inputs.minutes }}
+          HANDOFF: ${{ inputs.handoff }}
+        run: |
+          set -u
+          MINUTES="${MINUTES:-330}"
+          UNTIL=$(TZ=America/New_York date -d "+${MINUTES} minutes" +%H:%M)
+          HANDOFF_AT=$(( (MINUTES - 3) * 60 ))
+          [ "$HANDOFF_AT" -lt 30 ] && HANDOFF_AT=30
+
+          echo "watching until ${UNTIL} ET; handoff in $((HANDOFF_AT / 60)) min"
+
+          # Arm the successor in the background, inside this same step so it
+          # shares the step's lifetime. It fires 3 minutes before this link
+          # stops, giving a real overlap rather than a gap. If the watcher
+          # below dies early, the `wait` still lets this timer complete, so a
+          # crashed watcher does not by itself break the chain.
+          if [ "${HANDOFF:-true}" = "true" ]; then
+            (
+              sleep "$HANDOFF_AT"
+              echo "handing off to the next link"
+              gh workflow run halt-relay.yml \
+                 -f minutes="$MINUTES" -f handoff=true \
+                 || echo "HANDOFF FAILED - chain will stop after this link"
+            ) &
+            HANDOFF_PID=$!
+          else
+            echo "handoff disabled for this link (one-off test)"
+            HANDOFF_PID=""
+          fi
+
+          # No --all-hours: the watcher polls every 8s during 09:25-16:10 ET and
+          # backs off to 5 minutes outside it, so overnight links cost little.
+          python3 halt_watcher.py --announce --until "$UNTIL" || \
+            echo "watcher exited non-zero; still waiting for the handoff"
+
+          if [ -n "$HANDOFF_PID" ]; then
+            wait "$HANDOFF_PID" 2>/dev/null || true
+          fi
+
+      - name: Safety net - ensure a successor exists
+        if: always() && inputs.handoff == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # If the background handoff never fired (step cancelled mid-sleep,
+          # gh transient failure), create the successor now rather than let the
+          # chain die silently.
+          N=$(gh run list --workflow halt-relay.yml --status in_progress \
+                --json databaseId --jq 'length' 2>/dev/null || echo 99)
+          echo "links in flight at exit: $N"
+          if [ "${N:-99}" -le 1 ]; then
+            echo "no successor found - dispatching one"
+            gh workflow run halt-relay.yml \
+               -f minutes="${{ inputs.minutes }}" -f handoff=true
+          else
+            echo "successor already running"
+          fi

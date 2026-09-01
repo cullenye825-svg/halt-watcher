@@ -17,8 +17,9 @@ name: Halt watcher (morning)
 # is what actually decides whether a given attempt should watch.
 
 on:
-  schedule:
-    - cron: '13,43 13-17 * * 1-5'   # every 30 min, covers 09:00-12:00 ET in EDT and EST
+  # Schedule REMOVED 2026-09-01. GitHub's cron delivered ~2 of ~28 due
+  # fires for this repo; halt-relay.yml now drives coverage via
+  # workflow_dispatch instead. These legs remain for manual use only.
   workflow_dispatch:
     inputs:
       minutes:
