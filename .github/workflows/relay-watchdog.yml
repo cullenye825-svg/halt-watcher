@@ -1,0 +1,46 @@
+name: Relay watchdog
+
+# Backstop for halt-relay.yml. Every relay link carries a buddy job on a second
+# runner that restarts the chain within minutes if the link dies
+# (relay_guard.py). This covers what a buddy cannot see: both runners lost at
+# once, an Actions outage that took the whole chain down, a restart that
+# failed. If nothing is watching and the chain was not cancelled on purpose, it
+# starts a new link and says so on Telegram (loud during the session, silent
+# outside it). If links keep dying on start it stops trying and says that,
+# loudly, instead.
+#
+# GitHub's cron is sparse for this repo: the schedule canary saw ~6 of 48 daily
+# fires delivered between 2026-09-01 and 2026-10-06 (gaps median ~4 h, max
+# ~9 h). That is why this is the backstop and not the fast path. Four slots an
+# hour cost nothing (a run takes ~10 s) and give the scheduler more chances.
+# Minutes avoid :00 and :30, the platform's busiest.
+#
+# Read-only check from any machine: python3 relay_guard.py status
+
+on:
+  schedule:
+    - cron: '7,23,37,53 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write        # required to dispatch a new relay link
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Shared with the relay's restart job: one restart at a time, ever.
+    concurrency:
+      group: halt-relay-restart
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restart the relay if nothing is watching
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 relay_guard.py watchdog

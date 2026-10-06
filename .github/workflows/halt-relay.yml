@@ -16,16 +16,36 @@ name: Halt relay
 # the two documented exceptions to "events triggered by the GITHUB_TOKEN will
 # not create a new workflow run". No personal access token is required.
 #
-# THE CHAIN'S WEAKNESS: it is a chain. If a link is cancelled or its runner
-# dies before the handoff fires, the chain stops and stays stopped until
-# someone dispatches it by hand. The silent Telegram "online" heartbeat at the
-# start of every link is the tripwire -- if those stop arriving, the chain broke.
+# THE CHAIN'S WEAKNESS: it is a chain. If a link's runner dies before the
+# handoff fires, the safety-net step dies with it and nothing else would
+# restart the chain. That happened on 2026-10-03 at 15:22 UTC ("The hosted
+# runner lost communication with the server") and the chain stayed down until
+# it was dispatched by hand on 2026-10-06.
+#
+# THE FIX (relay_guard.py): every chain link now has a `buddy` job on a SECOND
+# runner. It never watches halts; it waits for this link's `relay` job and, if
+# that ends (or overruns its window) with no newer link watching, the
+# `restart` job dispatches a new link and says so on Telegram -- recovery in
+# minutes. relay-watchdog.yml is the cron backstop for anything a buddy cannot
+# see (both runners lost, an Actions outage). Restarts from either path are
+# serialised through one concurrency group and re-checked before dispatching,
+# so they can never start two chains. The silent Telegram "online" heartbeat at
+# the start of every link remains the tripwire for everything else.
 #
 # A link with minutes < 60 is treated as a one-off TEST: it watches, but never
 # hands off. That keeps experiments from spawning an unstoppable fast chain.
+# Its buddy runs as a DRILL: the full check runs, the restart job runs dry,
+# and nothing is dispatched or sent. A 5-minute run is the end-to-end test.
 #
 # To start it:  Actions -> Halt relay -> Run workflow  (defaults are correct)
 # To stop it:   cancel the in-flight run(s); no successor will be created.
+#               Cancelling a run cancels its buddy too, and the watchdog reads
+#               a link whose relay and buddy jobs were both cancelled as a
+#               deliberate stop.
+
+# The inputs are in the title so relay_guard.py can tell chain links from
+# test links without reading logs.
+run-name: "Halt relay (${{ inputs.minutes || '330' }} min, handoff ${{ inputs.handoff || 'true' }})"
 
 on:
   workflow_dispatch:
@@ -153,3 +173,61 @@ jobs:
           else
             echo "successor already running"
           fi
+
+  buddy:
+    # Sits beside the relay job on its OWN runner, so a runner that dies takes
+    # only one of the two with it. Never watches halts. Polls this run's
+    # `relay` job once a minute; when it ends, or is still marked running five
+    # minutes past its window, checks whether a newer link is watching and, if
+    # not, asks the `restart` job below for a new link.
+    if: inputs.handoff == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      restart: ${{ steps.wait.outputs.restart }}
+      drill: ${{ steps.wait.outputs.drill }}
+      reason: ${{ steps.wait.outputs.reason }}
+      since: ${{ steps.wait.outputs.since }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait beside the watcher, then check for a successor
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MINUTES: ${{ inputs.minutes }}
+        run: python3 relay_guard.py buddy --minutes "${MINUTES:-330}"
+
+  restart:
+    needs: buddy
+    if: needs.buddy.outputs.restart == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One restart at a time, shared with relay-watchdog.yml. The job re-checks
+    # once it holds the group and keeps holding it until the new link is
+    # listed, so a second request finds that link and does nothing.
+    concurrency:
+      group: halt-relay-restart
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restart the chain unless something is already watching
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MINUTES: ${{ inputs.minutes }}
+          REASON: ${{ needs.buddy.outputs.reason }}
+          SINCE: ${{ needs.buddy.outputs.since }}
+          DRILL: ${{ needs.buddy.outputs.drill }}
+        run: |
+          python3 relay_guard.py restart --minutes "${MINUTES:-330}" \
+            --reason "$REASON" --since "$SINCE" --drill "$DRILL"

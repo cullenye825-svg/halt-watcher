@@ -3,11 +3,15 @@
 Pushes US equity trading halts to your phone within ~8 seconds. Watches LULD
 volatility pauses and market-wide circuit breakers by default.
 
-**Status: live.** Runs itself on GitHub Actions — two scheduled legs cover
-09:20–16:10 ET every weekday. Alerts go to **Telegram**. Nothing to install.
-To check it end to end, use **Actions → Halt watcher (morning) → Run workflow**;
-a manual run bypasses the time guard, sends two test pushes (one at each real
-alert priority) and watches for the minutes you enter.
+**Status: live.** Runs itself on GitHub Actions as a self-relaying chain of
+~5.5-hour jobs (`halt-relay.yml`) that watches around the clock — every 8 s
+during 09:25–16:10 ET, every 5 min outside it. Alerts go to **Telegram**.
+Nothing to install. Each link has a buddy job that restarts the chain within
+minutes if the link dies, and a cron watchdog backs that up (see
+[Keeping the chain alive](#keeping-the-chain-alive)). To test pushes end to end,
+use **Actions → Halt watcher (morning) → Run workflow**: a manual run sends two
+test pushes (one at each real alert priority) and watches for the minutes you
+enter.
 
 ## Which feed, and why not NYSE
 
@@ -100,8 +104,11 @@ python3 halt_watcher.py
 #### Option A — GitHub Actions (recommended to start; free, no credit card)
 
 Public repos get **unlimited** free Actions minutes, and a job can run for up to
-6 hours. Two workflows cover the session in a morning and an afternoon leg,
-polling every 8 seconds inside a long-running job.
+6 hours. `halt-relay.yml` chains those jobs: each link polls every 8 seconds
+inside a long-running job for 330 minutes and dispatches its successor three
+minutes before it stops. (The morning/afternoon legs were scheduled until
+2026-09-01, when GitHub's cron proved to deliver only a fraction of its fires;
+they remain for manual runs.)
 
 This is what this repo already does. To rebuild it elsewhere:
 
@@ -123,9 +130,10 @@ Three things to know:
   world-readable, so `log()` scrubs every registered secret from its output —
   the Telegram API puts the bot token in the URL, and an exception carrying
   that URL would otherwise print it.
-- **Cron is UTC and drifts.** GitHub can delay a scheduled run by 5–15 minutes
-  under load, so each leg is scheduled 10 minutes early. Both an EDT and an EST
-  cron are registered and a guard step exits the wrong one — no DST maintenance.
+- **Cron is unreliable here, so nothing load-bearing uses it.** The schedule
+  canary measured ~6 of 48 daily fires delivered (2026-09-01 to 2026-10-06),
+  hours late. The relay runs on `workflow_dispatch`, which fires instantly;
+  only the watchdog backstop is on cron.
 - **Scheduled workflows are auto-disabled after 60 days of repo inactivity.**
   `keepalive.yml` pushes an empty weekly commit so this never happens.
 
@@ -192,22 +200,58 @@ scheduler — it persists state to `--state-file` between runs.
   in a session gives you two alerts, as it should.
 - **The loop never dies.** Feed 403s, malformed XML, DNS failures and delivery
   outages are all caught and logged; the next poll just tries again.
-- **Silence is never ambiguous.** With `--announce` (on by default for the
-  scheduled legs) each leg sends a silent "online" message when it starts and a
-  silent "signing off, N alerts sent" when it ends. Four quiet Telegram
-  messages a day bracket the session, so a leg that failed to start looks
-  different from a market with no halts.
+- **Silence is never ambiguous.** With `--announce` (on for every relay link)
+  each link sends a silent "online" message when it starts and a silent
+  "signing off, N alerts sent" when it ends — about four quiet Telegram
+  messages a day, so a dead chain looks different from a market with no halts.
 - **A running job keeps the code it started with.** Pushing a fix mid-session
   does NOT change a leg that is already running — it will finish the day on the
   old commit. Re-dispatch the leg if a change must take effect immediately.
 - **Tapping the notification** opens that symbol's TradingView chart. Change
   the `click` URL in `poll_once` if you'd rather it deep-link somewhere else.
 
+## Keeping the chain alive
+
+The relay's weak point is that each link is one runner. On 2026-10-03 GitHub
+lost the runner of a link ("The hosted runner lost communication with the
+server") before its handoff; the safety-net step died with it and the phone
+went quiet until the chain was restarted by hand on 2026-10-06.
+`relay_guard.py` closes that gap:
+
+- **Buddy (minutes).** Every chain link runs a second job, `buddy`, on its own
+  runner. It never watches halts; it polls the link's `relay` job once a
+  minute. When that job ends — or is still marked running five minutes past its
+  window — and no newer link is watching, the `restart` job dispatches a new
+  link and posts **"Halt relay restarted"** (loud during the session, silent
+  outside it). Halts during the gap were not watched; the message says from
+  when.
+- **Watchdog (hours).** `relay-watchdog.yml` checks from cron, for what a buddy
+  cannot see: both runners lost, an Actions outage, a failed restart.
+- **No double chains.** Every restart, from either path, goes through one
+  concurrency group and re-checks before dispatching.
+- **No restart loops.** After four chain links in an hour with nothing
+  watching, auto-restart pauses and posts **"Halt relay is DOWN"** loudly.
+- **Stopping still works.** Cancel the in-flight run(s). Cancelling a run
+  cancels its buddy too, so nothing restarts it, and the watchdog reads a link
+  whose `relay` and `buddy` jobs were both cancelled as a deliberate stop.
+
+**Drill:** Actions → Halt relay → Run workflow with `minutes` = `1`. A link
+under 60 minutes never hands off, and its buddy runs the full check as a dry
+drill — the `restart` job logs what it would have done and dispatches nothing.
+
+**Check from anywhere:** `GH_TOKEN=$(gh auth token)
+GITHUB_REPOSITORY=<owner>/halt-watcher python3 relay_guard.py status` prints
+`HEALTHY`, `STOPPED` or what the watchdog would restart, and changes nothing.
+
 ## Tests
 
 ```bash
 python3 test_watcher.py
+python3 test_relay_guard.py
 ```
 
-Covers parsing, filtering, priming, dedupe, resume detection, circuit-breaker
-escalation, state pruning and error handling. No network required.
+`test_watcher.py` covers parsing, filtering, priming, dedupe, resume
+detection, circuit-breaker escalation, state pruning and error handling.
+`test_relay_guard.py` covers the restart decisions, including a replay of the
+2026-10-03 failure, deliberate stops, duplicate and loop protection, and the
+API calls. No network required for either.
