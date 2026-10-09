@@ -243,11 +243,38 @@ drill — the `restart` job logs what it would have done and dispatches nothing.
 GITHUB_REPOSITORY=<owner>/halt-watcher python3 relay_guard.py status` prints
 `HEALTHY`, `STOPPED` or what the watchdog would restart, and changes nothing.
 
+## Decision buttons (paper study)
+
+Nasdaq-listed LULD pauses (`LUDP`/`LUDS`, `Market` = `NASDAQ`) carry inline
+buttons for a paper-only study of which halts the owner would pick:
+`[Enter] [Enter ★]` / `[Skip]` on the halt ping and `[Sell ABCD now]
+[Hold ABCD past 90 s]` on the resume ping. Every other LULD ping carries no
+buttons and the line `Not scored (no tape)`. No orders are placed anywhere.
+
+- The relay only **sends** the buttons. Taps go to a separate recorder
+  (a Cloudflare Worker behind a Telegram webhook). The relay never reads
+  updates and never calls `getUpdates`, so it never sees a decision, and no
+  decision content can reach these public logs.
+- `callback_data` is `v1|<CODE>|<SYMBOL>|<YYYYMMDDTHHMMSS>`: the HaltTime in
+  UTC, truncated to the second (≤ 64 bytes). The `Halted:` line prints the
+  same truncated `HH:MM:SS`, because the recorder cross-checks a button
+  against it. `tests/callback_contract.json` is the contract: the recorder's
+  repo holds a byte-identical copy and decodes it with its own parser.
+- If Telegram rejects the keyboard (HTTP 400), the alert is resent once
+  without it. A 429 waits Telegram's `retry_after`, within 60 s in total.
+- Every `PUSH` line ends `msg_id=<id> tg_date=<unix s> kb=<0|1>`, so the
+  day's ping census can be rebuilt from the run logs.
+- **Drill:** Run workflow with `minutes=1`, `handoff=true` and
+  `drill_alert=true`. The test link sends one silent `DRILL - TEST HALTED`
+  alert with the buttons, and its buddy runs the restart drill dry. Do it
+  outside 09:25–16:10 ET and at least 10 min from a chain handoff.
+
 ## Tests
 
 ```bash
 python3 test_watcher.py
 python3 test_relay_guard.py
+python3 test_buttons.py      # --write regenerates tests/callback_contract.json
 ```
 
 `test_watcher.py` covers parsing, filtering, priming, dedupe, resume

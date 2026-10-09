@@ -7,8 +7,9 @@ import json, tempfile, pathlib, sys, urllib.parse
 import halt_watcher as hw
 
 PUSHES = []
-hw.push = lambda cfg, title, body, priority="high", tags="", click=None, silent=False: (
-    PUSHES.append({"title": title, "body": body, "priority": priority}) or True
+hw.push = lambda cfg, title, body, priority="high", tags="", click=None, silent=False, reply_markup=None: (
+    PUSHES.append({"title": title, "body": body, "priority": priority,
+                   "reply_markup": reply_markup}) or True
 )
 
 def feed(items):
@@ -148,7 +149,7 @@ ok = hw.telegram_push(tg_cfg, "SWBI HALTED - LULD volatility pause",
                       "Smith & Wesson Brands <Class A>\nReason: LUDP",
                       click="https://example.com/?a=1&b=2")
 _ur.urlopen = _real
-check("telegram push returns True on 200", ok is True)
+check("telegram push is truthy on 200", bool(ok))
 check("ampersand escaped", "%26amp%3B" in CAPTURED["data"])
 check("angle brackets escaped", "%26lt%3B" in CAPTURED["data"])
 check("token in URL not body", "123%3AABC" not in CAPTURED["data"] and "bot123:ABC" in CAPTURED["url"])

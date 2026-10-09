@@ -1,0 +1,372 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "halt_ms": 1791469721000,
+        "stamp": "20261008T142841",
+        "symbol": "ABCD"
+      },
+      "halt": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|E|ABCD|20261008T142841",
+                "text": "Enter"
+              },
+              {
+                "callback_data": "v1|E*|ABCD|20261008T142841",
+                "text": "Enter ★"
+              }
+            ],
+            [
+              {
+                "callback_data": "v1|S|ABCD|20261008T142841",
+                "text": "Skip"
+              }
+            ]
+          ]
+        },
+        "text": "ABCD HALTED - LULD volatility pause\nABCD  (NASDAQ)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: 10:28:41 ET  10/08/2026\nPause threshold: 4.12\nResume trade: 10:33:41 ET\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "10:28:41.123",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "10:33:41",
+        "symbol": "ABCD",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_ludp_edt",
+      "resume": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|X|ABCD|20261008T142841",
+                "text": "Sell ABCD now"
+              },
+              {
+                "callback_data": "v1|H|ABCD|20261008T142841",
+                "text": "Hold ABCD past 90 s"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "halt_ms": 1794257999000,
+        "stamp": "20261109T205959",
+        "symbol": "XYZW"
+      },
+      "halt": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|E|XYZW|20261109T205959",
+                "text": "Enter"
+              },
+              {
+                "callback_data": "v1|E*|XYZW|20261109T205959",
+                "text": "Enter ★"
+              }
+            ],
+            [
+              {
+                "callback_data": "v1|S|XYZW|20261109T205959",
+                "text": "Skip"
+              }
+            ]
+          ]
+        },
+        "text": "XYZW HALTED - LULD pause (straddle)\nXYZW  (NASDAQ)\nTest Co\nReason: LUDS · LULD pause (straddle)\nHalted: 15:59:59 ET  11/09/2026\nPause threshold: 4.12\nResume trade: 16:04:59 ET\nOpen chart"
+      },
+      "item": {
+        "halt_date": "11/09/2026",
+        "halt_time": "15:59:59.999",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDS",
+        "resume_date": "11/09/2026",
+        "resume_quote": "",
+        "resume_trade": "16:04:59",
+        "symbol": "XYZW",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_luds_est_last_second",
+      "resume": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|X|XYZW|20261109T205959",
+                "text": "Sell XYZW now"
+              },
+              {
+                "callback_data": "v1|H|XYZW|20261109T205959",
+                "text": "Hold XYZW past 90 s"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "halt_ms": 1804602600000,
+        "stamp": "20270309T143000",
+        "symbol": "ABCDEFGHIJ"
+      },
+      "halt": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|E|ABCDEFGHIJ|20270309T143000",
+                "text": "Enter"
+              },
+              {
+                "callback_data": "v1|E*|ABCDEFGHIJ|20270309T143000",
+                "text": "Enter ★"
+              }
+            ],
+            [
+              {
+                "callback_data": "v1|S|ABCDEFGHIJ|20270309T143000",
+                "text": "Skip"
+              }
+            ]
+          ]
+        },
+        "text": "ABCDEFGHIJ HALTED - LULD volatility pause\nABCDEFGHIJ  (NASDAQ)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: 09:30:00 ET  03/09/2027\nPause threshold: 4.12\nResume: not yet published\nOpen chart"
+      },
+      "item": {
+        "halt_date": "03/09/2027",
+        "halt_time": "09:30:00",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "03/09/2027",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "ABCDEFGHIJ",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_ten_char_symbol",
+      "resume": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|X|ABCDEFGHIJ|20270309T143000",
+                "text": "Sell ABCDEFGHIJ now"
+              },
+              {
+                "callback_data": "v1|H|ABCDEFGHIJ|20270309T143000",
+                "text": "Hold ABCDEFGHIJ past 90 s"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "halt_ms": 1814457605000,
+        "stamp": "20270701T160005",
+        "symbol": "AB.W"
+      },
+      "halt": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|E|AB.W|20270701T160005",
+                "text": "Enter"
+              },
+              {
+                "callback_data": "v1|E*|AB.W|20270701T160005",
+                "text": "Enter ★"
+              }
+            ],
+            [
+              {
+                "callback_data": "v1|S|AB.W|20270701T160005",
+                "text": "Skip"
+              }
+            ]
+          ]
+        },
+        "text": "AB.W HALTED - LULD volatility pause\nAB.W  (NASDAQ)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: 12:00:05 ET  07/01/2027\nPause threshold: 4.12\nResume: not yet published\nOpen chart"
+      },
+      "item": {
+        "halt_date": "07/01/2027",
+        "halt_time": "12:00:05.5",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "07/01/2027",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "AB.W",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_dotted_symbol",
+      "resume": {
+        "reply_markup": {
+          "inline_keyboard": [
+            [
+              {
+                "callback_data": "v1|X|AB.W|20270701T160005",
+                "text": "Sell AB.W now"
+              },
+              {
+                "callback_data": "v1|H|AB.W|20270701T160005",
+                "text": "Hold AB.W past 90 s"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "stamp": null,
+        "symbol": null
+      },
+      "halt": {
+        "reply_markup": null,
+        "text": "NYSX HALTED - LULD volatility pause\nNYSX  (NYSE)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: 10:00:00 ET  10/08/2026\nPause threshold: 4.12\nResume: not yet published\nNot scored (no tape)\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "10:00:00.000",
+        "market": "NYSE",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "NYSX",
+        "threshold": "4.12"
+      },
+      "name": "nyse_ludp_not_scored",
+      "resume": {
+        "reply_markup": null
+      }
+    },
+    {
+      "expect": {
+        "stamp": null,
+        "symbol": null
+      },
+      "halt": {
+        "reply_markup": null,
+        "text": "AMXX HALTED - LULD pause (straddle)\nAMXX  (AMEX)\nTest Co\nReason: LUDS · LULD pause (straddle)\nHalted: 10:00:00 ET  10/08/2026\nPause threshold: 4.12\nResume: not yet published\nNot scored (no tape)\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "10:00:00.000",
+        "market": "AMEX",
+        "name": "Test Co",
+        "reason": "LUDS",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "AMXX",
+        "threshold": "4.12"
+      },
+      "name": "amex_luds_not_scored",
+      "resume": {
+        "reply_markup": null
+      }
+    },
+    {
+      "expect": {
+        "stamp": null,
+        "symbol": null
+      },
+      "halt": {
+        "reply_markup": null,
+        "text": "CORP HALTED - Corporate action\nCORP  (NASDAQ)\nTest Co\nReason: M1 · Corporate action\nHalted: 10:00:00 ET  10/08/2026\nPause threshold: 4.12\nResume: not yet published\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "10:00:00.000",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "M1",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "CORP",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_m1_no_buttons",
+      "resume": {
+        "reply_markup": null
+      }
+    },
+    {
+      "expect": {
+        "stamp": null,
+        "symbol": null
+      },
+      "halt": {
+        "reply_markup": null,
+        "text": "ab+c HALTED - LULD volatility pause\nab+c  (NASDAQ)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: 10:00:00 ET  10/08/2026\nPause threshold: 4.12\nResume: not yet published\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "10:00:00.000",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "ab+c",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_bad_symbol",
+      "resume": {
+        "reply_markup": null
+      }
+    },
+    {
+      "expect": {
+        "stamp": null,
+        "symbol": null
+      },
+      "halt": {
+        "reply_markup": null,
+        "text": "TIME HALTED - LULD volatility pause\nTIME  (NASDAQ)\nTest Co\nReason: LUDP · LULD volatility pause\nHalted: ? ET  10/08/2026\nPause threshold: 4.12\nResume: not yet published\nOpen chart"
+      },
+      "item": {
+        "halt_date": "10/08/2026",
+        "halt_time": "",
+        "market": "NASDAQ",
+        "name": "Test Co",
+        "reason": "LUDP",
+        "resume_date": "10/08/2026",
+        "resume_quote": "",
+        "resume_trade": "",
+        "symbol": "TIME",
+        "threshold": "4.12"
+      },
+      "name": "nasdaq_bad_time",
+      "resume": {
+        "reply_markup": null
+      }
+    }
+  ],
+  "producer": "halt-watcher test_buttons.py",
+  "version": "v1"
+}

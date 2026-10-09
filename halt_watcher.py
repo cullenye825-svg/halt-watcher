@@ -33,6 +33,7 @@ import html
 import json
 import os
 import random
+import re
 import sys
 import time
 import urllib.error
@@ -104,6 +105,105 @@ REASON_TEXT = {
 }
 
 MARKET_WIDE = {"MWC0", "MWC1", "MWC2", "MWC3", "MWCQ"}
+
+
+# --------------------------------------------------------------------------- #
+# decision buttons (OWNER-DISC paper test; the recorder is a separate
+# Cloudflare Worker that receives the taps -- this relay never sees them)
+# --------------------------------------------------------------------------- #
+#
+# Only Nasdaq-listed LULD pauses carry buttons: the research tape that scores a
+# pause exists for Nasdaq listings alone. Every other LULD ping says so.
+#
+# callback_data grammar, shared with the recorder (luld repo,
+# tools/discretion_worker/src/callback.js -- the two must match exactly; the
+# fixture tests/callback_contract.json is the same file in both repos):
+#
+#   v1|<CODE>|<SYMBOL>|<YYYYMMDDTHHMMSS>     HaltTime in UTC, whole seconds
+#
+#   E  Enter   E*  Enter (conviction)   S  Skip     -- on the halt ping
+#   X  Sell now   H  Hold past 90 s                 -- on the resume ping
+#
+# The halt time is the feed's HaltTime truncated to the second and converted
+# from ET. The "Halted:" line prints the same truncated time, because the
+# recorder cross-checks a button against that line and reads only HH:MM:SS.
+
+SCORED_REASONS = {"LUDP", "LUDS"}
+SCORED_MARKET = "NASDAQ"
+NOT_SCORED_LINE = "Not scored (no tape)"
+SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+_CLOCK_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$")
+_DATE_RE = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
+CALLBACK_MAX_BYTES = 64
+
+
+def halt_clock(h: dict) -> str | None:
+    """HaltTime as HH:MM:SS (milliseconds dropped), or None if malformed."""
+    m = _CLOCK_RE.match(h.get("halt_time", "").strip())
+    return f"{m.group(1)}:{m.group(2)}:{m.group(3)}" if m else None
+
+
+def halt_utc_stamp(h: dict) -> str | None:
+    """The pause's HaltTime as UTC 'YYYYMMDDTHHMMSS', or None if unparseable."""
+    clock = _CLOCK_RE.match(h.get("halt_time", "").strip())
+    date = _DATE_RE.match(h.get("halt_date", "").strip())
+    if not clock or not date:
+        return None
+    hh, mi, ss = (int(x) for x in clock.groups())
+    mo, dd, yy = (int(x) for x in date.groups())
+    try:
+        local = datetime(yy, mo, dd, hh, mi, ss, tzinfo=ET_TZ)
+    except ValueError:
+        return None
+    return local.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+
+def is_scored(h: dict) -> bool:
+    return (h["reason"] in SCORED_REASONS
+            and h.get("market", "").strip().upper() == SCORED_MARKET)
+
+
+def _callback(code: str, symbol: str, stamp: str) -> str:
+    data = f"v1|{code}|{symbol}|{stamp}"
+    if len(data.encode("utf-8")) > CALLBACK_MAX_BYTES:
+        raise ValueError("callback_data too long")
+    return data
+
+
+def _button_parts(h: dict) -> tuple[str, str] | None:
+    if not is_scored(h):
+        return None
+    symbol = h["symbol"].strip()
+    stamp = halt_utc_stamp(h)
+    if not SYMBOL_RE.match(symbol) or stamp is None:
+        return None
+    return symbol, stamp
+
+
+def halt_keyboard(h: dict) -> dict | None:
+    """[Enter] [Enter ★] / [Skip] for a scored pause, else None."""
+    parts = _button_parts(h)
+    if parts is None:
+        return None
+    symbol, stamp = parts
+    return {"inline_keyboard": [
+        [{"text": "Enter", "callback_data": _callback("E", symbol, stamp)},
+         {"text": "Enter \u2605", "callback_data": _callback("E*", symbol, stamp)}],
+        [{"text": "Skip", "callback_data": _callback("S", symbol, stamp)}],
+    ]}
+
+
+def resume_keyboard(h: dict) -> dict | None:
+    """[Sell ABCD now] [Hold ABCD past 90 s] for a scored pause, else None."""
+    parts = _button_parts(h)
+    if parts is None:
+        return None
+    symbol, stamp = parts
+    return {"inline_keyboard": [
+        [{"text": f"Sell {symbol} now", "callback_data": _callback("X", symbol, stamp)},
+         {"text": f"Hold {symbol} past 90 s",
+          "callback_data": _callback("H", symbol, stamp)}],
+    ]}
 
 
 # Values that must never reach stdout. Actions logs on a PUBLIC repo are
@@ -191,7 +291,8 @@ def _hdr(value: str) -> str:
 
 def ntfy_push(cfg: dict, title: str, body: str, priority: str = "high",
               tags: str = "rotating_light", click: str | None = None,
-              silent: bool = False) -> bool:
+              silent: bool = False, reply_markup: dict | None = None) -> bool:
+    # ntfy has no inline buttons; reply_markup is ignored on this transport.
     url = f"{cfg['server'].rstrip('/')}/{cfg['topic']}"
     headers = {
         "Title": _hdr(title),
@@ -220,18 +321,48 @@ def ntfy_push(cfg: dict, title: str, body: str, priority: str = "high",
 TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+# 429 handling: wait what Telegram asks, but never hold the poll loop longer
+# than this in total -- a ping later than this is no longer worth sending.
+TG_429_BUDGET_S = 60.0
+
+
+def _tg_result(resp) -> dict:
+    """message_id and date from a sendMessage response (None if unreadable)."""
+    try:
+        payload = json.loads(resp.read().decode("utf-8", "replace"))
+        result = payload.get("result") or {}
+        return {"message_id": result.get("message_id"), "date": result.get("date")}
+    except Exception:
+        return {"message_id": None, "date": None}
+
+
+def _retry_after(detail: str) -> float | None:
+    try:
+        params = json.loads(detail).get("parameters") or {}
+        value = params.get("retry_after")
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
 def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
                   tags: str = "", click: str | None = None,
-                  silent: bool = False) -> bool:
+                  silent: bool = False, reply_markup: dict | None = None):
     """Telegram has no title/priority fields, so the title becomes a bold first
     line. Delivery goes through Telegram's own push infrastructure, which on iOS
     does NOT depend on the app being woken for a background fetch -- that is the
-    whole reason we are not on ntfy."""
+    whole reason we are not on ntfy.
+
+    Returns None on failure, else a dict {message_id, date, kb}: Telegram's own
+    id and server date for the message (logged for the ping census) and whether
+    the inline keyboard went out. If Telegram rejects the keyboard (HTTP 400),
+    the message is resent once without it. A 429 is retried after the
+    retry_after Telegram asks for, within TG_429_BUDGET_S."""
     lines = [f"<b>{html.escape(title)}</b>", html.escape(body)]
     if click:
         lines.append(f'<a href="{html.escape(click, quote=True)}">Open chart</a>')
 
-    data = urllib.parse.urlencode({
+    fields = {
         "chat_id": cfg["chat_id"],
         "text": "\n".join(lines),
         "parse_mode": "HTML",
@@ -239,34 +370,76 @@ def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
         # Heartbeats are delivered silently: visible in the chat for an
         # at-a-glance liveness check, but they never make the phone ring.
         "disable_notification": "true" if silent else "false",
-    }).encode()
+    }
+    markup = reply_markup
 
     url = TG_API.format(token=cfg["tg_token"])
-    for attempt in range(3):
+    attempt = 0
+    waited = 0.0
+    while attempt < 3:
+        data_fields = dict(fields)
+        if markup is not None:
+            data_fields["reply_markup"] = json.dumps(markup, separators=(",", ":"))
+        data = urllib.parse.urlencode(data_fields).encode()
         try:
             req = urllib.request.Request(url, data=data, method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if 200 <= resp.status < 300:
-                    return True
+                    out = _tg_result(resp)
+                    out["kb"] = markup is not None
+                    return out
+            attempt += 1
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:200]
+            if exc.code == 429:
+                wait = _retry_after(detail)
+                wait = 1.0 if wait is None else max(wait, 0.0)
+                if waited + wait > TG_429_BUDGET_S:
+                    log(f"  telegram 429: retry_after {wait:g}s exceeds the "
+                        f"{TG_429_BUDGET_S:g}s budget; giving up")
+                    return None
+                log(f"  telegram 429: waiting retry_after {wait:g}s")
+                time.sleep(wait)
+                waited += wait
+                continue                      # a 429 is not a failed attempt
             log(f"  telegram attempt {attempt + 1} HTTP {exc.code}: {detail}")
+            if exc.code == 400 and markup is not None:
+                log("  keyboard rejected; resending without buttons")
+                markup = None
+                continue
             if exc.code in (400, 401, 403):
-                return False          # bad token / chat id: retrying won't help
-            time.sleep(1.5 * (attempt + 1))
+                return None           # bad token / chat id: retrying won't help
+            attempt += 1
+            time.sleep(1.5 * attempt)
         except Exception as exc:
             log(f"  telegram attempt {attempt + 1} failed: {exc}")
-            time.sleep(1.5 * (attempt + 1))
-    return False
+            attempt += 1
+            time.sleep(1.5 * attempt)
+    return None
 
 
 def push(cfg: dict, title: str, body: str, priority: str = "high",
          tags: str = "rotating_light", click: str | None = None,
-         silent: bool = False) -> bool:
-    """Send through whichever backend is configured."""
+         silent: bool = False, reply_markup: dict | None = None):
+    """Send through whichever backend is configured. Truthy on success: a dict
+    with Telegram's message_id/date on Telegram, True on ntfy."""
     if cfg["backend"] == "telegram":
-        return telegram_push(cfg, title, body, priority, tags, click, silent)
-    return ntfy_push(cfg, title, body, priority, tags, click, silent)
+        return telegram_push(cfg, title, body, priority, tags, click, silent,
+                             reply_markup)
+    return ntfy_push(cfg, title, body, priority, tags, click, silent,
+                     reply_markup)
+
+
+def push_ids(result) -> str:
+    """'msg_id=<id> tg_date=<unix s> kb=<0|1>' for a PUSH log line. Ids and
+    dates only: never the keyboard, never anything the owner taps."""
+    if isinstance(result, dict):
+        mid = result.get("message_id")
+        date = result.get("date")
+        kb = 1 if result.get("kb") else 0
+        return (f"msg_id={mid if mid is not None else '-'} "
+                f"tg_date={date if date is not None else '-'} kb={kb}")
+    return "msg_id=- tg_date=- kb=0"
 
 
 def format_halt(h: dict) -> tuple[str, str, str, str]:
@@ -286,7 +459,8 @@ def format_halt(h: dict) -> tuple[str, str, str, str]:
     if h["name"]:
         lines.append(h["name"])
     lines.append(f"Reason: {h['reason']} · {reason}")
-    lines.append(f"Halted: {h['halt_time'] or '?'} ET  {h['halt_date']}")
+    lines.append(f"Halted: {halt_clock(h) or h['halt_time'] or '?'} ET  "
+                 f"{h['halt_date']}")
     if h["threshold"]:
         lines.append(f"Pause threshold: {h['threshold']}")
     if h["resume_trade"]:
@@ -295,6 +469,8 @@ def format_halt(h: dict) -> tuple[str, str, str, str]:
         lines.append(f"Resume quote: {h['resume_quote']} ET")
     else:
         lines.append("Resume: not yet published")
+    if h["reason"] in SCORED_REASONS and not is_scored(h):
+        lines.append(NOT_SCORED_LINE)
 
     return title, "\n".join(lines), priority, tags
 
@@ -369,8 +545,11 @@ def poll_once(cfg: dict, state: dict, prime: bool = False) -> int:
                 continue
             title, body, priority, tags = format_halt(h)
             click = f"https://www.tradingview.com/chart/?symbol={h['symbol']}"
-            if push(cfg, title, body, priority, tags, click):
-                log(f"PUSH halt  {h['symbol']:<8} {h['reason']:<5} {h['halt_time']}")
+            result = push(cfg, title, body, priority, tags, click,
+                          reply_markup=halt_keyboard(h))
+            if result:
+                log(f"PUSH halt  {h['symbol']:<8} {h['reason']:<5} {h['halt_time']} "
+                    f"{push_ids(result)}")
                 sent += 1
             state["alerted"][key] = now
             continue
@@ -380,9 +559,12 @@ def poll_once(cfg: dict, state: dict, prime: bool = False) -> int:
             body = (f"{h['symbol']}  ({h['market']})\n"
                     f"Resumes trading {h['resume_trade']} ET\n"
                     f"Was halted {h['halt_time']} ET · {h['reason']}")
-            if push(cfg, f"{h['symbol']} resuming", body,
-                         priority="default", tags="arrow_forward"):
-                log(f"PUSH resume {h['symbol']:<8} {h['resume_trade']}")
+            result = push(cfg, f"{h['symbol']} resuming", body,
+                          priority="default", tags="arrow_forward",
+                          reply_markup=resume_keyboard(h))
+            if result:
+                log(f"PUSH resume {h['symbol']:<8} {h['resume_trade']} "
+                    f"{push_ids(result)}")
                 sent += 1
             state["resumed"].append(key)
 
@@ -464,6 +646,10 @@ def main() -> None:
                    help="poll at full rate outside 09:25-16:10 ET too")
     p.add_argument("--test", action="store_true",
                    help="send one test push and exit")
+    p.add_argument("--drill", action="store_true",
+                   help="send one SILENT synthetic halt alert with the decision "
+                        "buttons (symbol TEST, tagged DRILL) and exit; proves "
+                        "Telegram accepts the keyboard")
     p.add_argument("--announce", action="store_true",
                    help="silently report going online / signing off, so a dead "
                         "watcher looks different from a quiet market")
@@ -499,6 +685,21 @@ def main() -> None:
         log("urgent test push sent" if ok_urgent else "urgent test FAILED")
 
         sys.exit(0 if (ok_high and ok_urgent) else 1)
+
+    if args.drill:
+        now = datetime.now(ET_TZ)
+        item = {"symbol": "TEST", "name": "DRILL - synthetic alert, not a real halt",
+                "market": "NASDAQ", "reason": "LUDP",
+                "halt_date": f"{now:%m/%d/%Y}", "halt_time": f"{now:%H:%M:%S}",
+                "threshold": "", "resume_date": "", "resume_quote": "",
+                "resume_trade": ""}
+        title, body, _, _ = format_halt(item)
+        result = push(cfg, "DRILL - " + title, body + "\nDRILL: do not act on this.",
+                      priority="default", tags="test_tube", silent=True,
+                      reply_markup=halt_keyboard(item))
+        log(f"PUSH drill TEST     LUDP  {item['halt_time']} {push_ids(result)}"
+            if result else "drill push FAILED")
+        sys.exit(0 if result else 1)
 
     state = load_state(state_path)
 

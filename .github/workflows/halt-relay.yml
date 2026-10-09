@@ -58,6 +58,10 @@ on:
         description: 'Dispatch a successor? Set false for a one-off test link.'
         required: false
         default: 'true'
+      drill_alert:
+        description: 'Test links only (minutes < 60): first send one silent synthetic DRILL alert with the decision buttons.'
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -100,6 +104,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MINUTES: ${{ inputs.minutes }}
           HANDOFF: ${{ inputs.handoff }}
+          DRILL_ALERT: ${{ inputs.drill_alert }}
         run: |
           set -u
           MINUTES="${MINUTES:-330}"
@@ -121,6 +126,9 @@ jobs:
           if [ "$MINUTES" -lt 60 ]; then
             echo "minutes=$MINUTES is a test link - handoff suppressed"
             HANDOFF=false
+            if [ "${DRILL_ALERT:-false}" = "true" ]; then
+              python3 halt_watcher.py --drill || echo "DRILL ALERT FAILED"
+            fi
           fi
 
           if [ "${HANDOFF:-true}" = "true" ]; then
