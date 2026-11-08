@@ -220,13 +220,30 @@ def ntfy_push(cfg: dict, title: str, body: str, priority: str = "high",
 TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+# 429 handling: wait what Telegram asks, but never hold the poll loop longer
+# than this in total -- a ping later than this is no longer worth sending.
+TG_429_BUDGET_S = 60.0
+
+
+def _retry_after(detail: str) -> float | None:
+    try:
+        params = json.loads(detail).get("parameters") or {}
+        value = params.get("retry_after")
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
 def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
                   tags: str = "", click: str | None = None,
                   silent: bool = False) -> bool:
     """Telegram has no title/priority fields, so the title becomes a bold first
     line. Delivery goes through Telegram's own push infrastructure, which on iOS
     does NOT depend on the app being woken for a background fetch -- that is the
-    whole reason we are not on ntfy."""
+    whole reason we are not on ntfy.
+
+    A 429 is retried after the retry_after Telegram asks for, within
+    TG_429_BUDGET_S, and does not use up a failure attempt."""
     lines = [f"<b>{html.escape(title)}</b>", html.escape(body)]
     if click:
         lines.append(f'<a href="{html.escape(click, quote=True)}">Open chart</a>')
@@ -242,21 +259,37 @@ def telegram_push(cfg: dict, title: str, body: str, priority: str = "high",
     }).encode()
 
     url = TG_API.format(token=cfg["tg_token"])
-    for attempt in range(3):
+    attempt = 0
+    waited = 0.0
+    while attempt < 3:
         try:
             req = urllib.request.Request(url, data=data, method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if 200 <= resp.status < 300:
                     return True
+            attempt += 1
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:200]
+            if exc.code == 429:
+                wait = _retry_after(detail)
+                wait = 1.0 if wait is None else max(wait, 1.0)
+                if waited + wait > TG_429_BUDGET_S:
+                    log(f"  telegram 429: retry_after {wait:g}s exceeds the "
+                        f"{TG_429_BUDGET_S:g}s budget; giving up")
+                    return False
+                log(f"  telegram 429: waiting retry_after {wait:g}s")
+                time.sleep(wait)
+                waited += wait
+                continue                      # a 429 is not a failed attempt
             log(f"  telegram attempt {attempt + 1} HTTP {exc.code}: {detail}")
             if exc.code in (400, 401, 403):
                 return False          # bad token / chat id: retrying won't help
-            time.sleep(1.5 * (attempt + 1))
+            attempt += 1
+            time.sleep(1.5 * attempt)
         except Exception as exc:
             log(f"  telegram attempt {attempt + 1} failed: {exc}")
-            time.sleep(1.5 * (attempt + 1))
+            attempt += 1
+            time.sleep(1.5 * attempt)
     return False
 
 

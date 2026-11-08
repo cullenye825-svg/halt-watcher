@@ -234,5 +234,44 @@ check("09:31 ET in session", hw.in_session(datetime(2026, 8, 28, 9, 31, tzinfo=h
 check("08:00 ET out",   not hw.in_session(datetime(2026, 8, 28, 8, 0, tzinfo=hw.ET_TZ)))
 check("Saturday out",   not hw.in_session(datetime(2026, 8, 29, 11, 0, tzinfo=hw.ET_TZ)))
 
+print("\n13. telegram 429 honours retry_after")
+import io, urllib.error
+class _Resp:
+    status = 200
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def _err(code, payload):
+    return urllib.error.HTTPError("https://api.telegram.org/x", code, "e", {},
+                                  io.BytesIO(json.dumps(payload).encode()))
+_TG = {"tg_token": "000:FAKE", "chat_id": "999"}
+_open, _sleep = hw.urllib.request.urlopen, hw.time.sleep
+SLEPT = []
+hw.time.sleep = lambda s: SLEPT.append(s)
+def run_tg(seq):
+    SLEPT.clear()
+    def fake(req, timeout=10):
+        r = seq.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    hw.urllib.request.urlopen = fake
+    return hw.telegram_push(_TG, "T", "B")
+check("429 waits what Telegram asks",
+      run_tg([_err(429, {"parameters": {"retry_after": 7}}), _Resp()]) is True and SLEPT == [7.0])
+check("429 beyond the budget gives up without sleeping",
+      run_tg([_err(429, {"parameters": {"retry_after": 90}})]) is False and SLEPT == [])
+check("429 with no retry_after waits 1 s",
+      run_tg([_err(429, {}), _Resp()]) is True and SLEPT == [1.0])
+check("429 with retry_after 0 still waits 1 s, so the loop always ends",
+      run_tg([_err(429, {"parameters": {"retry_after": 0}}), _Resp()]) is True and SLEPT == [1.0])
+check("a 429 does not use up a failure attempt",
+      run_tg([_err(429, {"parameters": {"retry_after": 1}}), _err(500, {}), _err(500, {}), _Resp()]) is True
+      and SLEPT == [1.0, 1.5, 3.0])
+check("three 500s still give up, with the old backoff",
+      run_tg([_err(500, {}), _err(500, {}), _err(500, {})]) is False and SLEPT == [1.5, 3.0, 4.5])
+check("a bad token still stops at once",
+      run_tg([_err(401, {})]) is False and SLEPT == [])
+hw.urllib.request.urlopen, hw.time.sleep = _open, _sleep
+
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILURES: {fails}"))
 sys.exit(1 if fails else 0)
